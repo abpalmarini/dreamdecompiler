@@ -1,4 +1,5 @@
 import datetime
+import gc
 
 import dill
 
@@ -13,6 +14,7 @@ from dreamcoder.fragmentGrammar import *
 from dreamcoder.taskBatcher import *
 from dreamcoder.primitiveGraph import graphPrimitives
 from dreamcoder.dreaming import backgroundHelmholtzEnumeration
+from dreamcoder.dreamdecompiler import DreamDecompiler, evaluateViewResults, evaluateViewResultsVS
 
 
 class ECResult():
@@ -51,6 +53,7 @@ class ECResult():
         self.sumMaxll = sumMaxll or [] #TODO name change 
         self.testingSumMaxll = testingSumMaxll or [] #TODO name change
         self.allFrontiers = allFrontiers or {}
+        self.rcViewResults = []
 
     def __repr__(self):
         attrs = ["{}={}".format(k, v) for k, v in self.__dict__.items()]
@@ -96,7 +99,11 @@ class ECResult():
                      "storeTaskMetrics": 'STM',
                      "topkNotMAP": "tknm",
                      "rewriteTaskMetrics": "RW",
-                     'taskBatchSize': 'batch'}
+                     'taskBatchSize': 'batch',
+                     "viewDreamDecompiler": "VRC",
+                     "useProgramPrimArgTypeCounts": "PATC",
+                     "chunkWeighting": "CW",
+                     "compressor": "CMPR",}
 
     @staticmethod
     def abbreviate(parameter): return ECResult.abbreviations.get(parameter, parameter)
@@ -177,7 +184,12 @@ def ecIterator(grammar, tasks,
                storeTaskMetrics=False,
                rewriteTaskMetrics=True,
                auxiliaryLoss=False,
-               custom_wake_generative=None):
+               custom_wake_generative=None,
+               viewDreamDecompiler=False,
+               useProgramPrimArgTypeCounts=True,
+               chunkWeighting=None,
+               numConsolidate=None,
+    ):
     if enumerationTimeout is None:
         eprint(
             "Please specify an enumeration timeout:",
@@ -236,7 +248,9 @@ def ecIterator(grammar, tasks,
             "featureExtractor",
             "evaluationTimeout",
             "testingTasks",
-            "compressor",
+            "topk_use_only_likelihood",
+            "useProgramPrimArgTypeCounts",
+            "numConsolidate",
             "custom_wake_generative"} and v is not None}
     if not useRecognitionModel:
         for k in {"helmholtzRatio", "recognitionTimeout", "biasOptimal", "mask",
@@ -254,6 +268,8 @@ def ecIterator(grammar, tasks,
         for k in {"structurePenalty", "pseudoCounts", "aic"}:
             del parameters[k]
     else: del parameters["useDSL"]
+    if compressor == "ddc_old":
+        del parameters["viewDreamDecompiler"]
     
     # Uses `parameters` to construct the checkpoint path
     def checkpointPath(iteration, extra=""):
@@ -464,17 +480,49 @@ def ecIterator(grammar, tasks,
                                                                  if len(f) > 0},
                                  'frontier')                
         
+        # After compression the programs in frontiers will be rewritten in terms of new
+        # primitives so need to store original for viewing recognition compiler results.
+        preCompressionFrontiers = list(result.allFrontiers.values())
+
         # Sleep-G
         if useDSL and not(noConsolidation):
             eprint(f"Currently using this much memory: {getThisMemoryUsage()}")
             grammar = consolidate(result, grammar, topK=topK, pseudoCounts=pseudoCounts, arity=arity, aic=aic,
                                   structurePenalty=structurePenalty, compressor=compressor, CPUs=CPUs,
-                                  iteration=j)
+                                  iteration=j, useProgramPrimArgTypeCounts=useProgramPrimArgTypeCounts,
+                                  fromRoot=False, chunkWeighting=chunkWeighting, maximumFrontier=maximumFrontier,
+                                  numConsolidate=numConsolidate[j])
             eprint(f"Currently using this much memory: {getThisMemoryUsage()}")
         else:
             eprint("Skipping consolidation.")
             result.grammars.append(grammar)
-            
+
+
+        # @DreamDecompiler: comparing outputs to original DreamCoder
+        if viewDreamDecompiler:
+            eprint("Evaluating recognition compiler results for viewing only.")
+            # No longer using fragmentGrammar for proposals (switched to VS).
+            if False:
+                with timing("Evaluated all view results (using proposals from fragmentGrammar)"):
+                    evaluateViewResults(result, preCompressionFrontiers, arity, useProgramPrimArgTypeCounts=True, CPUs=CPUs)
+            else:
+                # Do same as DreamCoder and check if any tasks need supervison.
+                needToSupervise = {f.task for f in preCompressionFrontiers
+                                if f.task.supervision is not None and f.empty}
+                preCompressionFrontiers = [f.replaceWithSupervised(result.grammars[-2])
+                                           if f.task in needToSupervise else f
+                                           for f in preCompressionFrontiers]
+                with timing("Evaluated all view results"):
+                    evaluateViewResultsVS(
+                        result,
+                        preCompressionFrontiers,
+                        arity,
+                        useProgramPrimArgTypeCounts,
+                        topK=topK,
+                        CPUs=CPUs
+                    )
+
+
         if outputPrefix is not None:
             path = checkpointPath(j + 1)
             with open(path, "wb") as handle:
@@ -666,7 +714,8 @@ def sleep_recognition(result, grammar, taskBatch, tasks, testingTasks, allFronti
     return totalTasksHitBottomUp
 
 def consolidate(result, grammar, _=None, topK=None, arity=None, pseudoCounts=None, aic=None,
-                structurePenalty=None, compressor=None, CPUs=None, iteration=None):
+                structurePenalty=None, compressor=None, CPUs=None, iteration=None, maximumFrontier=None,
+                useProgramPrimArgTypeCounts=None, fromRoot=None, chunkWeighting=None, numConsolidate=None):
     eprint("Showing the top 5 programs in each frontier being sent to the compressor:")
     for f in result.allFrontiers.values():
         if f.empty:
@@ -685,12 +734,44 @@ def consolidate(result, grammar, _=None, topK=None, arity=None, pseudoCounts=Non
     if len([f for f in compressionFrontiers if not f.empty]) == 0:
         eprint("No compression frontiers; not inducing a grammar this iteration.")
     else:
-        grammar, compressionFrontiers = induceGrammar(grammar, compressionFrontiers,
-                                                      topK=topK,
-                                                      pseudoCounts=pseudoCounts, a=arity,
-                                                      aic=aic, structurePenalty=structurePenalty,
-                                                      topk_use_only_likelihood=False,
-                                                      backend=compressor, CPUs=CPUs, iteration=iteration)
+        # @DreamDecompiler: find fragments worth chunking and add to grammar
+        if compressor == "ddc_old":
+            with timing("Induced a grammar using DreamDecompiler"):
+                grammar, compressionFrontiers = DreamDecompiler.consolidate(
+                    grammar,
+                    result.recognitionModel,
+                    compressionFrontiers,
+                    useProgramPrimArgTypeCounts,
+                    fromRoot,
+                    chunkWeighting,
+                    pseudoCounts,
+                    arity,
+                    CPUs
+                )
+        elif compressor == "ddc_vs":
+            with timing("Induced a grammar using DreamDecompiler (VS)"):
+                grammar, compressionFrontiers = DreamDecompiler.consolidateVS(
+                    grammar,
+                    result.recognitionModel,
+                    compressionFrontiers,
+                    useProgramPrimArgTypeCounts,
+                    fromRoot,
+                    chunkWeighting,
+                    numConsolidate=numConsolidate,
+                    maximumFrontier=maximumFrontier,
+                    pseudoCounts=pseudoCounts,
+                    arity=arity,
+                    topK=topK,
+                    CPUs=CPUs
+                )
+            gc.collect()
+        else:
+            grammar, compressionFrontiers = induceGrammar(grammar, compressionFrontiers,
+                                                        topK=topK,
+                                                        pseudoCounts=pseudoCounts, a=arity,
+                                                        aic=aic, structurePenalty=structurePenalty,
+                                                        topk_use_only_likelihood=False,
+                                                        backend=compressor, CPUs=CPUs, iteration=iteration)
         # Store compression frontiers in the result.
         for c in compressionFrontiers:
             result.allFrontiers[c.task] = c.topK(0) if c in needToSupervise else c
@@ -868,7 +949,7 @@ def commandlineArguments(_=None,
     parser.add_argument(
         "--compressor",
         default=compressor,
-        choices=["pypy","rust","vs","pypy_vs","ocaml","vs_factored","memorize"])
+        choices=["pypy","rust","vs","pypy_vs","ocaml","vs_factored","memorize","ddc_old","ddc_vs"])
     parser.add_argument(
         "--matrixRank",
         help="Maximum rank of bigram transition matrix for contextual recognition model. Defaults to full rank.",
@@ -946,6 +1027,28 @@ def commandlineArguments(_=None,
     parser.add_argument("--countParameters",
                         help="Load a checkpoint then report how many parameters are in the recognition model.",
                         default=None, type=str)
+    # Args specific to @DreamDecompiler
+    parser.add_argument("--viewDreamDecompiler",
+                        dest="viewDreamDecompiler",
+                        help="View/save results of dream decompiler outputs at each iteration: used for comparison only.",
+                        default=False,
+                        action="store_true")
+    parser.add_argument("--useProgramPrimArgTypeCounts",
+                        dest="useProgramPrimArgTypeCounts",
+                        help="If recognition compiler should use probabilities proportionate to counts in programs when marginailising parent node, arg and type in fragment likelihood.",
+                        default=True,
+                        action="store_true")
+    parser.add_argument(
+        "--chunkWeighting",
+        dest="chunkWeighting",
+        default=None,
+        choices=["raw", "prop", "uniform"])
+    parser.add_argument(
+        "--numConsolidate",
+        dest="numConsolidate",
+        help="How fragments should be chunked in each iteration: if an int then top given will be chunked, if a float then all above threshold will be chunked. Alternatively, you can provide a comma seperated list of different values for each iteration.",
+        default='0.5',
+        type=str)
     parser.set_defaults(useRecognitionModel=useRecognitionModel,
                         useDSL=True,
                         featureExtractor=featureExtractor,
@@ -999,6 +1102,15 @@ def commandlineArguments(_=None,
         sys.exit(0)
     del v["countParameters"]
         
+    # @DreamDecompiler: parse given numConsolidate and turn into list for use.
+    numConsolidateArg = v["numConsolidate"]
+    numType = float if "." in numConsolidateArg else int
+    if "," in numConsolidateArg:
+        numConsolidate = [numType(x) for x in numConsolidateArg.split(",")]
+        assert len(numConsolidate) >= v["iterations"]
+    else:
+        numConsolidate = [numType(numConsolidateArg)] * v["iterations"]
+    v["numConsolidate"] = numConsolidate
         
     return v
 

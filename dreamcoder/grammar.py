@@ -300,6 +300,9 @@ class Grammar(object):
             raise GrammarFailure((context, environment, request, expression))
 
         for argumentType, argument in zip(argumentTypes, xs):
+            # @DreamDecompiler: don't calculate likelihood of fragment placeholders
+            if isinstance(argument, PlaceholderIndex):
+                continue
             argumentType = argumentType.apply(context)
             context, newSummary = self.likelihoodSummary(
                 context, environment, argumentType, argument, silent=silent)
@@ -680,6 +683,7 @@ class Grammar(object):
     def sketchllApplication(self, context, environment,
                           sk_function, sk_arguments, full_function, full_arguments, argumentRequests):
         if argumentRequests == []:
+                import torch
                 return torch.tensor([0.]).cuda(), context #does this make sense?
         else:
             argRequest = argumentRequests[0].apply(context)
@@ -1034,6 +1038,9 @@ class ContextualGrammar:
         assert len(xs) == len(argumentTypes)
 
         for i, (argumentType, argument) in enumerate(zip(argumentTypes, xs)):
+            # @DreamDecompiler: don't calculate likelihood of fragment placeholders
+            if isinstance(argument, PlaceholderIndex):
+                continue
             argumentType = argumentType.apply(context)
             context, newSummary = self.likelihoodSummary(f, i,
                                                          context, environment, argumentType, argument)
@@ -1366,7 +1373,7 @@ class PCFG():
                 return _instantiations[t]
             
             t=t.canonical()
-            variables = t.free_type_variables()
+            variables = t.freeTypeVariables()
             
             return_value = []
             for substitution in itertools.product(possible_types, repeat=len(variables)):
@@ -1523,7 +1530,7 @@ class PCFG():
     def best_first_enumeration(self, partial=False):
         h=PQ()
 
-        h.push(0., (0., NamedHole(self.start_symbol).wrap_in_abstractions(self.number_of_arguments)))
+        h.push(0., (0., NamedHole(self.start_symbol).wrapInAbstractions(self.number_of_arguments)))
 
         def next_nonterminal(expression):
             if isinstance(expression, NamedHole):
@@ -1568,7 +1575,7 @@ class PCFG():
                 for lpp, k, arguments in self.productions[nt]:
                     rewrite = k
                     for nl, at in arguments:
-                        at = NamedHole(at).wrap_in_abstractions(nl)
+                        at = NamedHole(at).wrapInAbstractions(nl)
                         rewrite = Application(rewrite, at)
                     #eprint(e, ">>", substitute(e, rewrite))
                     ep = substitute(e, rewrite)
@@ -1582,7 +1589,7 @@ class PCFG():
         def expansions(expression):
             if isinstance(expression, NamedHole):
                 for _, k, arguments in self.productions[expression.name]:
-                    arguments = [NamedHole(at).wrap_in_abstractions(nl)
+                    arguments = [NamedHole(at).wrapInAbstractions(nl)
                                  for nl, at in arguments ]
                     for a in arguments:
                         k = Application(k, a)
@@ -1599,7 +1606,7 @@ class PCFG():
                 for x in expansions(expression.x):
                     yield Application(expression.f, x)
 
-        initial_split = [NamedHole(self.start_symbol).wrap_in_abstractions(self.number_of_arguments)]
+        initial_split = [NamedHole(self.start_symbol).wrapInAbstractions(self.number_of_arguments)]
         while len(initial_split) < nc:
             biggest=max(initial_split, key=lambda pp: self.log_probability(pp))
             initial_split = list(expansions(biggest)) + [pp for pp in initial_split if pp!=biggest]
@@ -1632,7 +1639,7 @@ class PCFG():
         self = self.number_rules()
 
         if skeletons is None:
-            skeletons = [NamedHole(self.start_symbol).wrap_in_abstractions(self.number_of_arguments)]
+            skeletons = [NamedHole(self.start_symbol).wrapInAbstractions(self.number_of_arguments)]
             skeletons = [pp for pps in self.split(10) for pp in pps ]
             eprint(skeletons)
         skeleton_costs=[int(-self.log_probability(pp)/resolution+0.5)
@@ -1666,16 +1673,16 @@ class PCFG():
                     elif len(arguments) == 1:
                         nl1, at1 = arguments[0]
                         for a1 in expressions_of_size(at1, size-cost):
-                            a1 = a1.wrap_in_abstractions(nl1)
+                            a1 = a1.wrapInAbstractions(nl1)
                             new.append(Application(k, a1))
                     elif len(arguments) == 2:
                         nl1, at1 = arguments[0]
                         nl2, at2 = arguments[1]
                         for c1 in range(size-cost):
                             for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
+                                a1 = a1.wrapInAbstractions(nl1)
                                 for a2 in expressions_of_size(at2, size-cost-c1):
-                                    a2 = a2.wrap_in_abstractions(nl2)
+                                    a2 = a2.wrapInAbstractions(nl2)
                                     new.append(Application(Application(k, a1), a2))
                     elif len(arguments) == 3:
                         nl1, at1 = arguments[0]
@@ -1683,12 +1690,12 @@ class PCFG():
                         nl3, at3 = arguments[2]
                         for c1 in range(size-cost):
                             for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
+                                a1 = a1.wrapInAbstractions(nl1)
                                 for c2 in range(size-cost-c1):
                                     for a2 in expressions_of_size(at2, c2):
-                                        a2 = a2.wrap_in_abstractions(nl2)
+                                        a2 = a2.wrapInAbstractions(nl2)
                                         for a3 in expressions_of_size(at3, size-cost-c1-c2):
-                                            a3 = a3.wrap_in_abstractions(nl3)
+                                            a3 = a3.wrapInAbstractions(nl3)
                                             new.append(Application(Application(Application(k, a1), a2), a3))
                     elif len(arguments) == 4:
                         nl1, at1 = arguments[0]
@@ -1697,15 +1704,15 @@ class PCFG():
                         nl4, at4 = arguments[3]
                         for c1 in range(size-cost):
                             for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
+                                a1 = a1.wrapInAbstractions(nl1)
                                 for c2 in range(size-cost-c1):
                                     for a2 in expressions_of_size(at2, c2):
-                                        a2 = a2.wrap_in_abstractions(nl2)
+                                        a2 = a2.wrapInAbstractions(nl2)
                                         for c3 in range(size-cost-c1-c2):
                                             for a3 in expressions_of_size(at3, c3):
-                                                a3 = a3.wrap_in_abstractions(nl3)
+                                                a3 = a3.wrapInAbstractions(nl3)
                                                 for a4 in expressions_of_size(at3, size-cost-c1-c2-c3):
-                                                    a4 = a4.wrap_in_abstractions(nl4)
+                                                    a4 = a4.wrapInAbstractions(nl4)
                                                     new.append(Application(Application(Application(Application(k, a1), a2), a3), a4))
                     elif len(arguments) == 5:
                         nl1, at1 = arguments[0]
@@ -1715,18 +1722,18 @@ class PCFG():
                         nl5, at5 = arguments[4]
                         for c1 in range(size-cost):
                             for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
+                                a1 = a1.wrapInAbstractions(nl1)
                                 for c2 in range(size-cost-c1):
                                     for a2 in expressions_of_size(at2, c2):
-                                        a2 = a2.wrap_in_abstractions(nl2)
+                                        a2 = a2.wrapInAbstractions(nl2)
                                         for c3 in range(size-cost-c1-c2):
                                             for a3 in expressions_of_size(at3, c3):
-                                                a3 = a3.wrap_in_abstractions(nl3)
+                                                a3 = a3.wrapInAbstractions(nl3)
                                                 for c4 in range(size-cost-c1-c2-c3):
                                                     for a4 in expressions_of_size(at3, c4):
-                                                        a4 = a4.wrap_in_abstractions(nl4)
+                                                        a4 = a4.wrapInAbstractions(nl4)
                                                         for a5 in expressions_of_size(at3, size-cost-c1-c2-c3-c4):
-                                                            a5 = a4.wrap_in_abstractions(nl5)
+                                                            a5 = a4.wrapInAbstractions(nl5)
                                                             new.append(Application(Application(Application(Application(Application(k, a1), a2), a3), a4), a5))
                     else:
                         assert False, "more than five arguments not supported for the enumeration algorithm but that is not for any good reason"

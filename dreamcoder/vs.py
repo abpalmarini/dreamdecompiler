@@ -772,7 +772,7 @@ class VersionTable():
             return beamTable[j]
 
         with timing("beamed version spaces"):
-            beams = parallelMap(numberOfCPUs(),
+            beams = parallelMap(2, #numberOfCPUs(),
                                 lambda hs: [ costs(h).unobject() for h in hs ],
                                 versions,
                                 memorySensitive=True,
@@ -886,6 +886,34 @@ class VersionTable():
                           pseudoCounts=pseudoCounts)
         frontiers = [g.rescoreFrontier(f) for f in frontiers]
         return g, frontiers
+
+    # @DreamDecompiler: Want to rewrite frontiers using new candidate without needing
+    # to rescore them so creating modified implementation of addInventionToGrammar.
+    def rewriteFrontiersWithInvention(self, candidate, frontiers):
+        candidateSource = next(self.extract(candidate))
+        v = RewriteWithInventionVisitor(candidateSource)
+        invention = v.invention
+
+        rewriteMapping = list({e.program
+                               for f in frontiers
+                               for e in f })
+        spaces = [self.superCache[self.incorporate(program)]
+                  for program in rewriteMapping ]
+        rewriteMapping = dict(zip(rewriteMapping,
+                                  self.rewriteWithInvention(candidate, spaces)))
+
+        def tryRewrite(program, request=None):
+            rw = v.execute(rewriteMapping[program], request=request)
+            return rw or program
+
+        frontiers = [Frontier([FrontierEntry(program=tryRewrite(e.program, request=f.task.request),
+                                             logLikelihood=e.logLikelihood,
+                                             logPrior=0.)
+                                       for e in f ],
+                              f.task)
+                     for f in frontiers ]
+
+        return invention, frontiers
 
 class CloseInventionVisitor():
     """normalize free variables - e.g., if $1 & $3 occur free then rename them to $0, $1

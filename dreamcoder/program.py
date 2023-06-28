@@ -10,11 +10,13 @@ import math
 class InferenceFailure(Exception):
     pass
 
-
 class ShiftFailure(Exception):
     pass
 
 class RunFailure(Exception):
+    pass
+
+class MatchFailure(Exception):
     pass
 
 
@@ -34,7 +36,7 @@ class Program(object):
         except UnificationFailure as e:
             return False
 
-    def wrap_in_abstractions(self, n):
+    def wrapInAbstractions(self, n):
         for _ in range(n):
             self = Abstraction(self)
         return self
@@ -498,6 +500,17 @@ class Index(Program):
         return Index(int(j)), n
 
 
+# @DreamDecompiler
+class PlaceholderIndex(Index):
+    '''DeBruijn index used to turn fragments into complete programs.'''
+
+    def __init__(self, i):
+        super().__init__(i)
+
+    def show(self, isFunction):
+        return "{$%d}" % self.i
+
+
 class Abstraction(Program):
     '''Lambda abstraction. Creates a new function.'''
 
@@ -956,7 +969,7 @@ class Mutator:
 
     def invented(self, e, tp, env, is_lhs=False):
         deleted_ll = self.logLikelihood(tp, e, env)
-        for expr, replaced_ll in self.fn(tp, deleted, is_left_application=is_lhs):
+        for expr, replaced_ll in self.fn(tp, deleted_ll, is_left_application=is_lhs):
             yield self.enclose(expr), deleted_ll + replaced_ll
 
     def primitive(self, e, tp, env, is_lhs=False):
