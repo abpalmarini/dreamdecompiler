@@ -1,6 +1,6 @@
 # DreamDecompiler
 A record of the code and experiments for the paper:
-> Palmarini, Alessandro B., Christopher G. Lucas, and N. Siddharth. "Bayesian Program Learning by Decompiling Amortized Knowledge." Forty-first International Conference on Machine Learning. 2024. [[arXiv]](https://arxiv.org/abs/2306.07856)
+> **Alessandro B. Palmarini, Christopher G. Lucas, Siddharth N** Proceedings of the 41st International Conference on Machine Learning, PMLR 235:39042-39055, 2024. [[arXiv]](https://arxiv.org/abs/2306.07856)
 
 This repository contains a fork of the `dreamcoder` subfolder in the original [DreamCoder repository](https://github.com/ellisk42/ec). The changes, mainly located in `dreamcoder/dreamdecompiler.py`, integrate the alternative variants for dream decompiling (as presented in the paper) within the [DreamCoder](https://arxiv.org/abs/2006.08381) system.
 
